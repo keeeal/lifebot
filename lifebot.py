@@ -1,20 +1,26 @@
 
-import os, asyncio, argparse, json
+import os, asyncio, json, argparse
 from random import choices
-from itertools import reduce
 
 import discord
+from discord import Embed
+from pandas import DataFrame
 
 
-def fib(n, x=0, y=1):
-    return x if n < 0 else fib(n-1, y, x+y)
+def fib(data: dict):
+    def f(n, x=0, y=1):
+        return x if n < 0 else f(n - 1, y, x + y)
+    return {k: f(v) * bool(v) for k, v in data.items()}
 
 
-def table(data, key_name='TASK', value_name='WEIGHT'):
-    import pandas as pd
+def block(message):
+    return '```' + message + '```'
+
+
+def table(data: dict, cols=('TASK', 'WEIGHT')):
     keys, values = zip(*data.items())
-    df = pd.DataFrame({key_name: keys, value_name: values})
-    return '```' + df.to_string(index=False) + '```'
+    df = DataFrame({cols[0]: keys, cols[1]: values})
+    return block(df.to_string(index=False))
 
 
 def main(config_file):
@@ -24,7 +30,7 @@ def main(config_file):
         with open(config_file) as f:
             config = json.load(f)
     else:
-        config = {'token': ''}
+        config = {'token': '', 'prefix': '-'}
         with open(config_file, 'w') as f:
             json.dump(config, f, indent=2)
 
@@ -37,59 +43,102 @@ def main(config_file):
 
     # create client
     client = discord.Client()
-    data = {}
+    user_data = {}
 
     # define commands
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--list', action='store_true')
-    parser.add_argument('--roll', action='store_true')
-    parser.add_argument('--add', metavar='TASK')
-    parser.add_argument('--delete', metavar='TASK')
+    prefix = config['prefix'][0]
+    parser = argparse.ArgumentParser(prefix_chars=prefix)
+    parser.add_argument(2*prefix + 'edit', metavar='TASK', nargs='+',
+        help='Add a new task or edit an existing one.')
+    parser.add_argument(2*prefix + 'list', action='store_true',
+        help='Display the current task list.')
+    parser.add_argument(2*prefix + 'roll', action='store_true',
+        help='Choose a task weighted by priority.')
 
-    # format help message
-    usage_help = parser.format_help().replace(
-        os.path.basename(__file__) + ' ', '')
-
+    # format help messages
+    usage_help = block(parser.format_help().replace(
+        os.path.basename(__file__) + ' ', '', 1))
+    no_tasks = 'Your task list is empty.'
 
     @client.event
     async def on_ready():
         print('Logged in as', client.user.name)
 
-
     @client.event
-    async def on_message(message):
-        if message.author == client.user:
+    async def on_message(m: discord.Message):
+        if m.author == client.user:
             return
 
-        content, channel = message.content, message.channel
-        if content.startswith('-'):
+        # get commands from message
+        if m.content.startswith(prefix):
             try:
-                args = vars(parser.parse_args(content.split()))
-
-                if args['list']:
-                    embed = discord.Embed(description=table(data))
-                    await channel.send(embed=embed)
-
-                if args['roll']:
-                    task = choices(*zip(*data.items()))[0]
-                    embed = discord.Embed(description='TASK: zz' + task)
-                    await channel.send(embed=embed)
-
-                if args['add']:
-                    data[args['add']] = data.get(args['add'], 0) + 1
-                    embed = discord.Embed(
-                        description=table({args['add']: data[args['add']]}))
-                    await channel.send(embed=embed)
-
-                if args['delete']:
-                    del data[args['delete']]
-                    embed = discord.Embed(
-                        description=args['delete'] + ' DELETED')
-                    await channel.send(embed=embed)
-
+                args = vars(parser.parse_args(m.content.split()))
             except SystemExit:
-                await channel.send(usage_help)
+                await m.channel.send(usage_help)
+                return
 
+            # get user's data
+            user_data[m.author] = user_data.get(m.author,
+                {'tasks': {}, 'edit': None})
+            data = user_data[m.author]
+
+            # edit command
+            if args['edit']:
+                task = ' '.join(args['edit'])
+                weight = data['tasks'].get(task, 1)
+                embed = Embed(description=table(fib({task: weight})))
+                reply = await m.channel.send(embed=embed)
+
+                for emoji in '🔼', '🔽':
+                    await reply.add_reaction(emoji)
+
+                data['tasks'][task] = weight
+                data['edit'] = reply, task
+
+            # list command
+            if args['list']:
+                data['edit'] = None
+                if data['tasks']:
+                    embed = Embed(description=table(fib(data['tasks'])))
+                    await m.channel.send(embed=embed)
+                else:
+                    embed = Embed(description=block(no_tasks))
+                    await m.channel.send(embed=embed)
+
+            # roll command
+            if args['roll']:
+                data['edit'] = None
+                if data['tasks']:
+                    task = choices(*zip(*fib(data['tasks']).items()))[0]
+                    embed = Embed(description=block(task))
+                    await m.channel.send(embed=embed)
+                else:
+                    embed = Embed(description=block(no_tasks))
+                    await m.channel.send(embed=embed)
+
+    @client.event
+    async def on_reaction_add(r: discord.Reaction, u: discord.User):
+        if u not in user_data:
+            return
+
+        # get user data
+        data = user_data[u]
+        if not data['edit']:
+            return
+
+        # get editable task
+        reply, task = data['edit']
+        if r.message.id == reply.id:
+            weight = data['tasks'][task]
+
+            if r.emoji == '🔼':
+                data['tasks'][task] = min(weight + 1, 100)
+            elif r.emoji == '🔽':
+                data['tasks'][task] = max(weight - 1, 0)
+
+            weight = data['tasks'][task]
+            embed = Embed(description=table(fib({task: weight})))
+            await r.message.edit(embed=embed)
 
     # start bot
     client.run(config['token'])
