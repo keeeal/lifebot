@@ -1,5 +1,5 @@
 
-import os
+import os, json
 from random import choices
 from argparse import ArgumentParser
 from configparser import ConfigParser
@@ -19,7 +19,7 @@ def fib(data: dict):
     return {k: f(v) * bool(v) for k, v in data.items()}
 
 
-def block(message):
+def block(message: str):
     return '```' + message + '```'
 
 
@@ -30,7 +30,7 @@ def table(data: dict, cols=('TASK', 'PRIORITY')):
     return block(df.to_string(index=False))
 
 
-def main(config_file):
+def main(config_file, data_dir):
 
     # load config file or create it
     config = ConfigParser()
@@ -47,8 +47,15 @@ def main(config_file):
         print('Copy bot token into "{}"'.format(config_file))
         return
 
-    # TODO: load data here
-    user_data = {}
+    # load user data
+    users = {}
+    if not os.path.isdir(data_dir):
+        os.mkdir(data_dir)
+    for user_id in os.listdir(data_dir):
+        with open(os.path.join(data_dir, user_id)) as f:
+            users[int(user_id)] = json.load(f)
+
+    print(users)
 
     # define bot commands
     prefix = config['LIFEBOT']['prefix']
@@ -85,11 +92,12 @@ def main(config_file):
                 await m.channel.send(usage_help)
                 return
 
-            # get user's data
-            user_data[m.author] = user_data.get(m.author,
-                {'tasks': {}, 'edit': None})
-            data = user_data[m.author]
-            data['tasks'] = clean(data['tasks'])
+            # get or create user profile
+            data = users.get(m.author.id, {'tasks': {}, 'edit': None})
+            data['tasks'], data['edit'] = clean(data['tasks']), None
+            users[m.author.id] = data
+            with open(os.path.join(data_dir, str(m.author.id)), 'w') as f:
+                json.dump(data, f)
 
             # edit command
             if command['edit']:
@@ -106,7 +114,6 @@ def main(config_file):
 
             # list command
             if command['list']:
-                data['edit'] = None
                 if data['tasks']:
                     embed = Embed(description=table(fib(data['tasks'])))
                     await m.channel.send(embed=embed)
@@ -116,7 +123,6 @@ def main(config_file):
 
             # roll command
             if command['roll']:
-                data['edit'] = None
                 if data['tasks']:
                     task = choices(*zip(*fib(data['tasks']).items()))[0]
                     embed = Embed(description=block(task))
@@ -127,11 +133,11 @@ def main(config_file):
 
     @client.event
     async def on_reaction_add(r: discord.Reaction, u: discord.User):
-        if u not in user_data:
+        if u.id not in users:
             return
 
         # get user data
-        data = user_data[u]
+        data = users[u.id]
         if not data['edit']:
             return
 
@@ -156,4 +162,5 @@ def main(config_file):
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--config-file', '-c', default='config.ini')
+    parser.add_argument('--data-dir', '-d', default='data')
     main(**vars(parser.parse_args()))
