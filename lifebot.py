@@ -1,6 +1,8 @@
 
-import os, asyncio, json, argparse
+import os
 from random import choices
+from argparse import ArgumentParser
+from configparser import ConfigParser
 
 import discord
 from discord import Embed
@@ -21,8 +23,9 @@ def block(message):
     return '```' + message + '```'
 
 
-def table(data: dict, cols=('TASK', 'WEIGHT')):
-    keys, values = zip(*data.items())
+def table(data: dict, cols=('TASK', 'PRIORITY')):
+    keys = sorted(data, key=data.get, reverse=True)
+    values = list(map(data.get, keys))
     df = DataFrame({cols[0]: keys, cols[1]: values})
     return block(df.to_string(index=False))
 
@@ -30,38 +33,40 @@ def table(data: dict, cols=('TASK', 'WEIGHT')):
 def main(config_file):
 
     # load config file or create it
+    config = ConfigParser()
     if os.path.isfile(config_file):
-        with open(config_file) as f:
-            config = json.load(f)
+        config.read(config_file)
     else:
-        config = {'token': '', 'prefix': '-'}
+        config.read_dict({'LIFEBOT': {'token': '', 'prefix': '--'}})
         with open(config_file, 'w') as f:
-            json.dump(config, f, indent=2)
+            config.write(f)
 
     # check for auth token
-    if not config['token']:
+    if not config['LIFEBOT']['token']:
         print('Error: Token not found.')
         print('Copy bot token into "{}"'.format(config_file))
         return
 
-    # create client
-    client = discord.Client()
+    # TODO: load data here
     user_data = {}
 
-    # define commands
-    prefix = config['prefix'][0]
-    parser = argparse.ArgumentParser(prefix_chars=prefix)
-    parser.add_argument(2*prefix + 'edit', metavar='TASK', nargs='+',
+    # define bot commands
+    prefix = config['LIFEBOT']['prefix']
+    commands = ArgumentParser(prefix_chars=prefix)
+    commands.add_argument(prefix + 'edit', metavar='TASK', nargs='+',
         help='Add a new task or edit an existing one.')
-    parser.add_argument(2*prefix + 'list', action='store_true',
+    commands.add_argument(prefix + 'list', action='store_true',
         help='Display the current task list.')
-    parser.add_argument(2*prefix + 'roll', action='store_true',
+    commands.add_argument(prefix + 'roll', action='store_true',
         help='Choose a task weighted by priority.')
 
     # format help messages
-    usage_help = block(parser.format_help().replace(
-        os.path.basename(__file__) + ' ', '', 1))
     no_tasks = 'Your task list is empty.'
+    usage_help = block(commands.format_help().replace(
+        os.path.basename(__file__) + ' ', '', 1))
+
+    # create client
+    client = discord.Client()
 
     @client.event
     async def on_ready():
@@ -72,10 +77,10 @@ def main(config_file):
         if m.author == client.user:
             return
 
-        # get commands from message
+        # get command from message
         if m.content.startswith(prefix):
             try:
-                args = vars(parser.parse_args(m.content.split()))
+                command = vars(commands.parse_args(m.content.split()))
             except SystemExit:
                 await m.channel.send(usage_help)
                 return
@@ -87,8 +92,8 @@ def main(config_file):
             data['tasks'] = clean(data['tasks'])
 
             # edit command
-            if args['edit']:
-                task = ' '.join(args['edit'])
+            if command['edit']:
+                task = ' '.join(command['edit'])
                 weight = data['tasks'].get(task, 1)
                 embed = Embed(description=table(fib({task: weight})))
                 reply = await m.channel.send(embed=embed)
@@ -100,7 +105,7 @@ def main(config_file):
                 data['edit'] = reply, task
 
             # list command
-            if args['list']:
+            if command['list']:
                 data['edit'] = None
                 if data['tasks']:
                     embed = Embed(description=table(fib(data['tasks'])))
@@ -110,7 +115,7 @@ def main(config_file):
                     await m.channel.send(embed=embed)
 
             # roll command
-            if args['roll']:
+            if command['roll']:
                 data['edit'] = None
                 if data['tasks']:
                     task = choices(*zip(*fib(data['tasks']).items()))[0]
@@ -145,10 +150,10 @@ def main(config_file):
             await r.message.edit(embed=embed)
 
     # start bot
-    client.run(config['token'])
+    client.run(config['LIFEBOT']['token'])
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config-file', '-c', default='config.json')
+    parser = ArgumentParser()
+    parser.add_argument('--config-file', '-c', default='config.ini')
     main(**vars(parser.parse_args()))
